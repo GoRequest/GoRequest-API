@@ -8,15 +8,15 @@ This project focuses on exploring HTTP, networking, concurrency, and backend dev
 
 ## Features
 
-The following features are planned:
+Implemented features:
 
-- Support for GET, POST, PUT, PATCH, and DELETE requests
+- Support for GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS requests
 - Custom request headers and body
 - HTTP response status, headers, and body
 - Request execution time
 - Bearer Token authentication
 - Request timeout handling
-- Safe HTTP request execution
+- Public destination validation and bounded request/response sizes
 
 ## Tech Stack
 
@@ -27,9 +27,81 @@ The following features are planned:
 
 ## Getting Started
 
-GoRequest API is currently under development.
+Start the server on port 8080:
 
-Installation and setup instructions will be added as the project evolves.
+```sh
+go run ./cmd/server
+```
+
+Run the tests:
+
+```sh
+go test ./...
+```
+
+### Execute an HTTP request
+
+Send `POST http://localhost:8080/requests/execute` with `Content-Type: application/json`:
+
+```json
+{
+  "method": "POST",
+  "url": "https://httpbin.org/post",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer your-token"
+  },
+  "body": "{\"message\":\"hello\"}",
+  "timeout_ms": 10000
+}
+```
+
+`method` and `url` are required. Headers and body are optional. `timeout_ms`
+defaults to 30000 when omitted or zero, and otherwise accepts 1 through 60000.
+Bearer tokens are supplied through the `Authorization` header.
+
+A completed request returns HTTP 200 with the upstream response, including when
+the upstream returns a 4xx or 5xx status:
+
+```json
+{
+  "status_code": 200,
+  "status": "200 OK",
+  "headers": {"Content-Type": ["application/json"]},
+  "body": "{\"message\":\"hello\"}",
+  "size_bytes": 19,
+  "duration_ms": 123.45
+}
+```
+
+`size_bytes` counts response body bytes before JSON encoding, excluding headers.
+It measures the body after any automatic decompression by the HTTP client, rather
+than the compressed size on the network. An empty body has a size of zero.
+
+Response headers use arrays to preserve repeated values. Duration includes reading
+the response body. Bodies are returned as text; arbitrary binary downloads are
+not supported losslessly (invalid UTF-8 is replaced during JSON encoding).
+Redirect responses are returned without following the `Location` header.
+
+Errors use `{"error":"description"}` with these API status codes:
+
+| Status | Meaning |
+| --- | --- |
+| 400 | Invalid JSON, request fields, URL, method, headers, or timeout |
+| 413 | JSON request exceeds 1 MiB |
+| 415 | Content-Type is not application/json |
+| 502 | Connection/TLS/DNS failure, blocked destination, or response exceeds 5 MiB |
+| 504 | Execution timeout, including time spent reading the response |
+
+Only absolute HTTP/HTTPS URLs resolving exclusively to public IP addresses are
+allowed. Localhost, private, link-local, and reserved destinations are blocked at
+connection time, and the client dials the validated IP to prevent DNS rebinding.
+Proxy environment variables are ignored. URL credentials and fragments are
+rejected. Host, framing, proxy, and connection headers are managed by the client.
+TLS certificate verification uses Go's defaults.
+
+`GET /health` returns `{"status":"ok"}`. The API currently has no authentication
+or rate limiting; keep access restricted to trusted callers.
 
 ### Prerequisites
 
@@ -54,15 +126,16 @@ gorequest-api/
 
 ## Roadmap
 
-- [ ] Set up the HTTP server
-- [ ] Implement HTTP request execution
-- [ ] Support different HTTP methods
-- [ ] Handle custom headers and request bodies
-- [ ] Return HTTP response details
-- [ ] Implement request timeout handling
-- [ ] Add request validation and security
-- [ ] Write unit and integration tests
-- [ ] Document API endpoints
+- [x] Set up the HTTP server
+- [x] Implement HTTP request execution
+- [x] Support different HTTP methods
+- [x] Handle custom headers and request bodies
+- [x] Return HTTP response details
+- [x] Implement request timeout handling
+- [x] Add request validation and destination restrictions
+- [x] Write unit and integration tests
+- [x] Document API endpoints
+- [ ] Add authentication and rate limiting
 
 ## Frontend
 

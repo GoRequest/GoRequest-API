@@ -4,10 +4,17 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/MarlonBBo/GoRequest/internal/handler"
+	"github.com/MarlonBBo/GoRequest/internal/httpclient"
+	"github.com/MarlonBBo/GoRequest/internal/service"
 )
 
 func main() {
 	mux := http.NewServeMux()
+	executor := service.NewExecutor(httpclient.New())
+
+	mux.HandleFunc("POST /requests/execute", handler.Execute(executor))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
