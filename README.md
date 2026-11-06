@@ -196,36 +196,6 @@ not included yet.
 - Go 1.26.5
 - Git
 
-## Project Structure
-
-```text
-gorequest-api/
-├── cmd/
-│   └── server/
-│       └── main.go
-├── internal/
-│   ├── handler/
-│   ├── service/
-│   └── httpclient/
-├── go.mod
-├── README.md
-└── LICENSE
-```
-
-## Roadmap
-
-- [x] Set up the HTTP server
-- [x] Implement HTTP request execution
-- [x] Support different HTTP methods
-- [x] Handle custom headers and request bodies
-- [x] Return HTTP response details
-- [x] Implement request timeout handling
-- [x] Add request validation and destination restrictions
-- [x] Write unit and integration tests
-- [x] Document API endpoints
-- [x] Add user authentication and authentication endpoint rate limiting
-- [ ] Add request execution rate limiting
-
 ## Frontend
 
 The frontend is maintained in a separate repository and built with React and TypeScript.
