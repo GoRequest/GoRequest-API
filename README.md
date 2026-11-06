@@ -41,7 +41,9 @@ go test ./...
 
 ### Execute an HTTP request
 
-Send `POST http://localhost:8080/requests/execute` with `Content-Type: application/json`:
+Sign in first using the authentication endpoints below. Send
+`POST http://localhost:8080/requests/execute` with the session cookie and
+`Content-Type: application/json`:
 
 ```json
 {
