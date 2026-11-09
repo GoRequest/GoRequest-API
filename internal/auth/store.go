@@ -30,13 +30,39 @@ func Open(path string) (*Store, error) {
 	_, err = db.Exec(`PRAGMA foreign_keys = ON;
 	PRAGMA busy_timeout = 5000;
 	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL
+		id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE
 	);
 	CREATE TABLE IF NOT EXISTS sessions (
 		token_hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		expires_at INTEGER NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);`)
+	CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+	CREATE TABLE IF NOT EXISTS github_identities (
+		github_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE
+	);
+	CREATE TABLE IF NOT EXISTS oauth_flows (
+		state_hash BLOB PRIMARY KEY, verifier TEXT NOT NULL, previous_hash BLOB,
+		expires_at INTEGER NOT NULL
+	);`)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Preserve legacy accounts but remove password hashes and revoke pre-OAuth sessions.
+	var legacyPasswordColumn int
+	err = db.QueryRow(`SELECT count(*) FROM pragma_table_info('users') WHERE name = 'password_hash'`).Scan(&legacyPasswordColumn)
+	if err == nil && legacyPasswordColumn != 0 {
+		var tx *sql.Tx
+		tx, err = db.Begin()
+		if err == nil {
+			_, err = tx.Exec(`ALTER TABLE users DROP COLUMN password_hash; DELETE FROM sessions;`)
+			if err == nil {
+				err = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+		}
+	}
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -48,30 +74,16 @@ func (s *Store) Close() error { return s.db.Close() }
 
 var errEmailExists = errors.New("email already registered")
 
-func (s *Store) createUser(ctx context.Context, email, hash string) (User, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO users(email, password_hash) VALUES (?, ?) ON CONFLICT(email) DO NOTHING`, email, hash)
-	if err != nil {
-		return User{}, err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return User{}, err
-	}
-	if n == 0 {
-		return User{}, errEmailExists
-	}
-	id, err := result.LastInsertId()
-	return User{ID: id, Email: email}, err
-}
-
-func (s *Store) credentials(ctx context.Context, email string) (User, string, error) {
-	var u User
-	var hash string
-	err := s.db.QueryRowContext(ctx, `SELECT id, email, password_hash FROM users WHERE email = ?`, email).Scan(&u.ID, &u.Email, &hash)
-	return u, hash, err
-}
-
 func (s *Store) newSession(ctx context.Context, userID int64, previous string) (string, time.Time, error) {
+	var previousHash []byte
+	if previous != "" {
+		hash := sha256.Sum256([]byte(previous))
+		previousHash = hash[:]
+	}
+	return s.newSessionWithHash(ctx, userID, previousHash)
+}
+
+func (s *Store) newSessionWithHash(ctx context.Context, userID int64, previousHash []byte) (string, time.Time, error) {
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return "", time.Time{}, err
@@ -87,9 +99,8 @@ func (s *Store) newSession(ctx context.Context, userID int64, previous string) (
 	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix()); err != nil {
 		return "", time.Time{}, err
 	}
-	if previous != "" {
-		oldHash := sha256.Sum256([]byte(previous))
-		if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, oldHash[:]); err != nil {
+	if len(previousHash) != 0 {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, previousHash); err != nil {
 			return "", time.Time{}, err
 		}
 	}

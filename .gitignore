@@ -1,2 +1,5 @@
 gorequest.db*
 *.test
+.env
+.env.*
+!.env.example
