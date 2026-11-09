@@ -15,7 +15,8 @@ Implemented features:
 - HTTP response status, headers, and body
 - Request execution time
 - Bearer token support for destination APIs
-- User signup/login with persistent SQLite accounts and cookie sessions
+- Optional GitHub OAuth sign-in with persistent SQLite accounts and cookie sessions
+- Guest access to HTTP request execution
 - Request timeout handling
 - Public destination validation and bounded request/response sizes
 
@@ -47,8 +48,8 @@ go test ./...
 
 ### Execute an HTTP request
 
-Sign in first using the authentication endpoints below. Send
-`POST http://localhost:8080/requests/execute` with the session cookie and
+No sign-in is required. Send
+`POST http://localhost:8080/requests/execute` with
 `Content-Type: application/json`:
 
 ```json
@@ -98,7 +99,6 @@ Errors use `{"error":"description"}` with these API status codes:
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid JSON, request fields, URL, method, headers, or timeout |
-| 401 | Missing, invalid, expired, or revoked GoRequest session |
 | 403 | Browser origin rejected by CSRF protection |
 | 413 | JSON request exceeds 1 MiB |
 | 415 | Content-Type is not application/json |
@@ -114,82 +114,106 @@ TLS certificate verification uses Go's defaults.
 
 `GET /health` returns `{"status":"ok"}` without authentication.
 
-### User authentication
+### Optional GitHub sign-in
+
+Guests can execute requests without an account. GitHub OAuth is the only sign-in
+method; email/password signup and login endpoints have been removed. Signed-in
+users are available to handlers through `auth.CurrentUser`. Use `OptionalUser`
+for public routes and `RequireUser` for future account-only features. Saved
+requests, collections, and history are not implemented yet.
+
+1. In your GitHub OAuth App settings, set **Authorization callback URL** to
+   `http://localhost:8080/auth/github/callback` for local development.
+2. Fill in `.env` using `.env.example` as a reference (keep your existing credentials):
+
+   ```dotenv
+   GITHUB_CLIENT_ID=your-client-id
+   GITHUB_CLIENT_SECRET=your-client-secret
+   GITHUB_REDIRECT_URL=http://localhost:8080/auth/github/callback
+   AUTH_INSECURE_COOKIES=true
+   FRONTEND_ORIGIN=http://localhost:3000
+   ```
+
+3. Run `go run ./cmd/server` from the repository root. The server loads `.env`
+   automatically; existing process environment variables take precedence.
+4. Navigate the browser to `http://localhost:8080/auth/github` to sign in.
+
+Never put the client secret in frontend code. `.env` is ignored by Git. Use HTTPS
+and leave `AUTH_INSECURE_COOKIES` unset in production; update the callback URL in
+both the environment and GitHub OAuth App settings.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| POST | `/auth/signup` | Create an account; returns 201 with `{"user":{"id":1,"email":"you@example.com"}}` |
-| POST | `/auth/login` | Check credentials, set a session cookie, and return the user |
-| GET | `/auth/me` | Return the signed-in user, or 401 |
+| GET | `/auth/github` | Redirect the browser to GitHub for authorization |
+| GET | `/auth/github/callback` | Validate the OAuth flow and create an app session |
+| GET | `/auth/me` | Return `{"user":{"id":1,"email":"you@example.com"}}`, or 401 for guests |
 | POST | `/auth/logout` | Revoke the current session and clear its cookie; returns 204 |
+| POST | `/requests/execute` | Execute a request for guests or signed-in users |
 
-Signup and login require `Content-Type: application/json` and this body:
-
-```json
-{"email":"you@example.com","password":"a long unique password"}
-```
-
-Emails are trimmed and lowercased. Signup requires a password of at least 12
-characters and at most 1024 bytes. Passwords are salted and hashed with Argon2id
-(19 MiB memory, two iterations, one lane); plaintext passwords are never stored.
-Duplicate emails return 409. Invalid login credentials return a generic 401.
-Malformed input returns 400, oversized credentials (over 8 KiB) return 413, and an
-unsupported Content-Type returns 415.
-
-Signup creates the account; login is a separate step. For example, in PowerShell:
-
-```powershell
-$credentials = @{ email = "you@example.com"; password = "a long unique password" } | ConvertTo-Json
-Invoke-RestMethod http://localhost:8080/auth/signup -Method Post -ContentType "application/json" -Body $credentials
-Invoke-RestMethod http://localhost:8080/auth/login -Method Post -ContentType "application/json" -Body $credentials -SessionVariable session
-Invoke-RestMethod http://localhost:8080/auth/me -WebSession $session
-$request = @{ method = "GET"; url = "https://httpbin.org/get" } | ConvertTo-Json
-Invoke-RestMethod http://localhost:8080/requests/execute -Method Post -ContentType "application/json" -Body $request -WebSession $session
-Invoke-RestMethod http://localhost:8080/auth/logout -Method Post -WebSession $session
-```
-
-Sessions expire after seven days. Login rotates any session presented by the browser;
-logout immediately revokes it on the server. Only SHA-256 hashes of random 256-bit
-session tokens are stored in SQLite. Cookies use HttpOnly, SameSite=Strict, and, by
-default, Secure with the `__Host-` prefix. Authentication responses are not cached.
-Expired sessions are purged when a new session is created.
-
-Signup and login share a limit of 10 attempts per minute per direct client IP, with
-at most two concurrent password operations. Excess requests return 429 with
-`Retry-After`. Forwarded IP headers are deliberately ignored; behind a reverse
-proxy, callers share its IP limit. Configure per-client limiting at the proxy for
-that deployment. Request execution does not yet have a rate limit.
-
-Configuration:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AUTH_DB_PATH` | `gorequest.db` | SQLite database file; parent directory must exist |
-| `AUTH_INSECURE_COOKIES` | unset | Set exactly `true` only for local HTTP development |
-| `FRONTEND_ORIGIN` | unset | Optional exact frontend origin, e.g. `http://localhost:3000`, for credentialed CORS and CSRF trust |
-
-For the separate React frontend, set `FRONTEND_ORIGIN` to its origin and use
-`credentials: "include"` on **all** authentication and protected API calls:
+The callback redirects to `FRONTEND_ORIGIN/` when configured; otherwise it returns
+the signed-in user as JSON. Rejected callbacks return JSON errors. Successful
+sign-in sets an HttpOnly cookie. Use browser navigation for sign-in, not `fetch`:
 
 ```typescript
-const response = await fetch("http://localhost:8080/auth/login", {
+// Sign-in button:
+window.location.assign("http://localhost:8080/auth/github");
+
+// After returning to the frontend (401 means guest):
+const response = await fetch("http://localhost:8080/auth/me", {
+  credentials: "include",
+});
+
+// Sign out:
+await fetch("http://localhost:8080/auth/logout", {
   method: "POST",
   credentials: "include",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ email, password }),
 });
 ```
 
-No session token needs to be stored in localStorage. CSRF protection rejects unsafe
-browser requests from untrusted origins. SameSite=Strict cookies require the
-frontend and API to be on the same site: localhost with different ports works in
-development; use HTTPS on the same domain or sibling subdomains in production.
-An unrelated frontend domain will not receive cookies even if CORS permits it.
+Use `credentials: "include"` for authenticated API calls. Guest request execution
+also works without cookies. An expired or invalid session is treated as a guest
+on public routes. Account-only routes return 401.
 
-Persist and back up the SQLite file, restrict access to it, and exclude it from
-version control. This storage and in-memory throttling target a single backend
-instance. Email verification, password recovery, and frontend login screens are
-not included yet.
+GitHub authorization uses a random, browser-bound, one-time state with a ten-minute
+expiry and PKCE S256. The server requests `read:user user:email`, verifies the
+GitHub identity and primary verified email, and identifies returning users by
+GitHub's numeric user ID. GitHub access tokens are used only during sign-in and
+are not persisted or returned to the frontend. See the
+[GitHub OAuth documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
+
+App sessions expire after seven days and rotate on sign-in. Only SHA-256 hashes
+of session tokens are stored in SQLite. Cookies use HttpOnly, SameSite=Lax, and,
+by default, Secure with the `__Host-` prefix. Authentication responses are not
+cached. Unsafe browser requests are protected by origin checks.
+
+OAuth start and callback requests share a limit of ten requests per minute per
+direct client IP, with at most two concurrent authentication operations. Excess
+requests return 429 with `Retry-After`. Forwarded IP headers are ignored; behind
+a reverse proxy callers share its IP limit. Configure per-client limiting at the
+proxy for that deployment. Guest request execution does not yet have a rate limit.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GITHUB_CLIENT_ID` | unset | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | unset | Server-only GitHub OAuth App secret |
+| `GITHUB_REDIRECT_URL` | unset | Callback URL ending in `/auth/github/callback` |
+| `AUTH_DB_PATH` | `gorequest.db` | SQLite database file; parent directory must exist |
+| `AUTH_INSECURE_COOKIES` | unset | Set exactly `true` only for local HTTP development |
+| `FRONTEND_ORIGIN` | unset | Exact frontend origin, e.g. `http://localhost:3000`, for CORS, CSRF trust, and the post-login redirect |
+
+If all three GitHub settings are absent, sign-in routes are disabled and guest
+access remains available. Partial GitHub configuration stops startup with an
+error. Frontend and API should share the same site: localhost with different
+ports works in development; use HTTPS on the same domain or sibling subdomains
+in production. Cookies will not work for API fetches from an unrelated frontend
+domain, even when CORS allows it.
+
+On the first startup with a legacy database, a migration removes password hashes
+and revokes old sessions while preserving user records. Legacy users are not
+automatically linked by email. A GitHub sign-in whose email already belongs to
+an unlinked legacy account returns 409 and requires an explicit account migration;
+there is no self-service linking endpoint yet. Back up your database before
+upgrading. SQLite storage and in-memory throttling target a single backend instance.
 
 ### Prerequisites
 
