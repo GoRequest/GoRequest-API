@@ -46,6 +46,63 @@ Run the tests:
 go test ./...
 ```
 
+### Run with Docker
+
+Install Docker with the Compose plugin (on Windows, use Docker Desktop with
+Linux containers), then run from the repository root:
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+The API is available at `http://localhost:8080`. Check
+`http://localhost:8080/health` for `{"status":"ok"}`. The image also checks this
+endpoint automatically. View logs or stop the service with:
+
+```sh
+docker compose logs -f api
+docker compose down
+```
+
+The multi-stage [Dockerfile](./Dockerfile) builds the Go binary and runs it as a
+non-root user with HTTPS CA certificates. [compose.yaml](./compose.yaml) binds
+port 8080 to localhost for development. After source changes, run
+`docker compose up --build -d` again to rebuild the image.
+
+SQLite runs inside the API process. Its database is stored at
+`/data/gorequest.db` in the `api-data` named volume, which survives container
+rebuilds and `docker compose down`. **`docker compose down --volumes` deletes
+that database.** The container starts with a fresh database; the existing
+repository-local `gorequest.db` is not copied or changed.
+
+Compose reads the root `.env` for the settings listed in its `environment`
+section and passes them to the running container. Secrets and local databases
+are excluded from the image build. GitHub sign-in requires all three GitHub
+variables documented below; with all three absent, guest access works without
+an `.env` file. Do not use the placeholder OAuth credentials from `.env.example`
+as real configuration. Keep the local callback URL as
+`http://localhost:8080/auth/github/callback`.
+
+This Compose setup defaults `AUTH_INSECURE_COOKIES` to `true` for local HTTP.
+For production, set it to `false`, serve through an HTTPS reverse proxy, and
+configure the public GitHub callback URL and frontend origin accordingly.
+
+To back up SQLite, stop the API so the entire database directory can be copied
+consistently, then restart it. Use a new destination folder for each backup:
+
+```sh
+docker compose stop api
+docker compose cp api:/data ./gorequest-backup
+docker compose start api
+```
+
+Keep that backup outside the container and volume. To verify persistence locally,
+sign in, run `docker compose down`, and start the service again; accounts and
+unexpired sessions should still be available. The Docker volume is separate from
+the repository-local database; moving existing data into it requires a separate
+copy while the API is stopped, with ownership set to UID/GID `10001:10001`.
+
 ### Execute an HTTP request
 
 No sign-in is required. Send
