@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+*.db
+*.db-*
+**/*.db
+**/*.db-*
+gorequest-backup*
+*.exe
+coverage*
