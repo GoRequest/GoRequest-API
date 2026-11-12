@@ -1,18 +1,37 @@
 services:
   api:
     build: .
-    ports:
-      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+    expose:
+      - "8080"
+
     environment:
       AUTH_DB_PATH: /data/gorequest.db
-      AUTH_INSECURE_COOKIES: "${AUTH_INSECURE_COOKIES:-true}"
+      AUTH_INSECURE_COOKIES: "${AUTH_INSECURE_COOKIES:-false}"
       GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
       GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
       GITHUB_REDIRECT_URL: "${GITHUB_REDIRECT_URL:-}"
       FRONTEND_ORIGIN: "${FRONTEND_ORIGIN:-}"
+      EXECUTE_REQUESTS_PER_MINUTE: "${EXECUTE_REQUESTS_PER_MINUTE:-60}"
+      EXECUTE_CONCURRENT_PER_IP: "${EXECUTE_CONCURRENT_PER_IP:-2}"
+      EXECUTE_CONCURRENT_TOTAL: "${EXECUTE_CONCURRENT_TOTAL:-16}"
+
     volumes:
       - api-data:/data
-    restart: unless-stopped
+
+    networks:
+      proxy-network:
+        aliases:
+          - gorequest-api
+
+    mem_limit: 768m
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   api-data:
+
+networks:
+  proxy-network:
+    external: true

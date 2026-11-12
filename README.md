@@ -159,6 +159,7 @@ Errors use `{"error":"description"}` with these API status codes:
 | 403 | Browser origin rejected by CSRF protection |
 | 413 | JSON request exceeds 1 MiB |
 | 415 | Content-Type is not application/json |
+| 429 | Execution rate, concurrency, or client tracking capacity limit reached; retry after the `Retry-After` seconds |
 | 502 | Connection/TLS/DNS failure, blocked destination, or response exceeds 5 MiB |
 | 504 | Execution timeout, including time spent reading the response |
 
@@ -170,6 +171,24 @@ rejected. Host, framing, proxy, and connection headers are managed by the client
 TLS certificate verification uses Go's defaults.
 
 `GET /health` returns `{"status":"ok"}` without authentication.
+
+### Execution limits
+
+Guests and signed-in users share limits by direct client IP: by default, 60
+execution attempts per minute, 2 concurrent requests per IP, and 16 concurrent
+requests across the server. Each IP's one-minute window starts with its first
+attempt. Invalid requests and attempts rejected for concurrency count toward the
+rate limit. Excess requests are rejected immediately with JSON status 429 and
+`Retry-After` in seconds; there is no waiting queue. Concurrency slots cover
+authentication, body decoding, execution, and response writing and are released
+when the handler exits.
+
+Limits are in memory per server process and reset on restart. At most 4096 IPs
+are tracked; new IPs receive 429 when this table is full, until inactive expired
+entries can be reclaimed. Forwarded IP headers are ignored, so clients behind a
+reverse proxy share its limits. Configure per-client limits at the proxy and
+adjust these server limits to the deployment's capacity. Multiple replicas need
+shared limiting at the proxy or gateway for deployment-wide limits.
 
 ### Optional GitHub sign-in
 
@@ -247,7 +266,7 @@ OAuth start and callback requests share a limit of ten requests per minute per
 direct client IP, with at most two concurrent authentication operations. Excess
 requests return 429 with `Retry-After`. Forwarded IP headers are ignored; behind
 a reverse proxy callers share its IP limit. Configure per-client limiting at the
-proxy for that deployment. Guest request execution does not yet have a rate limit.
+proxy for that deployment. Execution has separate limits as documented above.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -257,6 +276,11 @@ proxy for that deployment. Guest request execution does not yet have a rate limi
 | `AUTH_DB_PATH` | `gorequest.db` | SQLite database file; parent directory must exist |
 | `AUTH_INSECURE_COOKIES` | unset | Set exactly `true` only for local HTTP development |
 | `FRONTEND_ORIGIN` | unset | Exact frontend origin, e.g. `http://localhost:3000`, for CORS, CSRF trust, and the post-login redirect |
+| `EXECUTE_REQUESTS_PER_MINUTE` | `60` | Execution attempts per minute per direct client IP |
+| `EXECUTE_CONCURRENT_PER_IP` | `2` | Maximum active execution handlers per direct client IP |
+| `EXECUTE_CONCURRENT_TOTAL` | `16` | Maximum active execution handlers across the server |
+
+Execution settings must be positive integers; invalid or empty values stop startup.
 
 If all three GitHub settings are absent, sign-in routes are disabled and guest
 access remains available. Partial GitHub configuration stops startup with an

@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/MarlonBBo/GoRequest/internal/auth"
@@ -38,8 +40,16 @@ func main() {
 	mux := http.NewServeMux()
 	accounts.RegisterRoutes(mux)
 	executor := service.NewExecutor(httpclient.New())
+	limits, err := executionLimitsFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	limitExecution, err := handler.NewExecutionLimiter(limits)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	mux.Handle("POST /requests/execute", accounts.OptionalUser(handler.Execute(executor)))
+	mux.Handle("POST /requests/execute", limitExecution(accounts.OptionalUser(handler.Execute(executor))))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
@@ -60,4 +70,25 @@ func main() {
 		log.Println("Development mode: session cookies allow plain HTTP")
 	}
 	log.Fatal(server.ListenAndServe())
+}
+
+func executionLimitsFromEnv() (handler.ExecutionLimits, error) {
+	limits := handler.ExecutionLimits{RequestsPerMinute: 60, ConcurrentPerIP: 2, ConcurrentTotal: 16}
+	for _, setting := range []struct {
+		name string
+		dest *int
+	}{
+		{"EXECUTE_REQUESTS_PER_MINUTE", &limits.RequestsPerMinute},
+		{"EXECUTE_CONCURRENT_PER_IP", &limits.ConcurrentPerIP},
+		{"EXECUTE_CONCURRENT_TOTAL", &limits.ConcurrentTotal},
+	} {
+		if raw, exists := os.LookupEnv(setting.name); exists {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 1 {
+				return limits, fmt.Errorf("%s must be a positive integer", setting.name)
+			}
+			*setting.dest = value
+		}
+	}
+	return limits, nil
 }
